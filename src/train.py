@@ -11,7 +11,6 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
 
-from src.baselines import SeasonalNaive
 from src.config import (
     META_FILE,
     METRICS_FILE,
@@ -41,20 +40,17 @@ def train(*, persist: bool = True) -> dict[str, Any]:
 
     X_train, y_train, cols = _xy(train_df)
     X_valid, y_valid, _ = _xy(valid_df)
-    X_test, y_test, _ = _xy(test_df)
 
-    # --- Baselines on validation (aligned lags) ---
+    # --- Baselines on validation ---
     baseline_scores: dict[str, dict[str, float]] = {}
+    valid_clean = valid_df.dropna(subset=cols + [TARGET_COL])
+    y_v = valid_clean[TARGET_COL].to_numpy(dtype=float)
     for season, name in [(24, "naive_24h"), (168, "naive_168h")]:
-        pred = valid_df.loc[X_valid.index, f"lag_{season}"].to_numpy(dtype=float)
-        # X_valid index may not match if dropna changed rows — re-align properly
-        valid_clean = valid_df.dropna(subset=cols + [TARGET_COL])
         pred = valid_clean[f"lag_{season}"].to_numpy(dtype=float)
-        y_v = valid_clean[TARGET_COL].to_numpy(dtype=float)
         baseline_scores[name] = regression_metrics(y_v, pred)
 
     candidates: dict[str, Any] = {
-        "ridge": Ridge(alpha=1.0, random_state=RANDOM_STATE),
+        "ridge": Ridge(alpha=1.0),
         "hgb": HistGradientBoostingRegressor(
             max_depth=6,
             learning_rate=0.08,
@@ -84,7 +80,15 @@ def train(*, persist: bool = True) -> dict[str, Any]:
     # Refit on train+valid for final test evaluation
     train_valid = pd.concat([train_df, valid_df], axis=0)
     X_tv, y_tv, cols = _xy(train_valid)
-    final_model = candidates[best_name].__class__(**best_model.get_params())
+    if best_name == "ridge":
+        final_model = Ridge(alpha=1.0)
+    else:
+        final_model = HistGradientBoostingRegressor(
+            max_depth=6,
+            learning_rate=0.08,
+            max_iter=200,
+            random_state=RANDOM_STATE,
+        )
     final_model.fit(X_tv, y_tv)
 
     test_clean = test_df.dropna(subset=cols + [TARGET_COL])
@@ -93,7 +97,6 @@ def train(*, persist: bool = True) -> dict[str, Any]:
     pred_test = final_model.predict(X_test)
     test_scores = regression_metrics(y_test, pred_test)
 
-    # Baseline on test for comparison
     test_baseline = regression_metrics(
         y_test, test_clean["lag_24"].to_numpy(dtype=float)
     )
@@ -121,7 +124,6 @@ def train(*, persist: bool = True) -> dict[str, Any]:
     if persist:
         joblib.dump(artifact, PIPELINE_FILE)
         METRICS_FILE.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-        # Keep tail history for recursive multi-step API forecasts
         history = raw[[TIME_COL, TARGET_COL]].tail(168 * 3).copy()
         meta = {
             "features": cols,
