@@ -26,6 +26,10 @@ def get_forecaster() -> DemandForecaster:
     return _forecaster
 
 
+class ForecastRequest(BaseModel):
+    horizon: int = Field(24, ge=1, le=336)
+
+
 class ForecastResponse(BaseModel):
     horizon: int
     forecasts: list[dict]
@@ -42,7 +46,7 @@ def health():
 
 
 @app.get("/forecast", response_model=ForecastResponse)
-def forecast(horizon: int = Query(24, ge=1, le=336)):
+def forecast_get(horizon: int = Query(24, ge=1, le=336)):
     fc = get_forecaster()
     try:
         points = fc.forecast(horizon=horizon)
@@ -51,6 +55,6 @@ def forecast(horizon: int = Query(24, ge=1, le=336)):
     return {"horizon": horizon, "forecasts": points}
 
 
-@app.post("/forecast")
-def forecast_post(horizon: int = Field(24, ge=1, le=336)):
-    return forecast(horizon=horizon)
+@app.post("/forecast", response_model=ForecastResponse)
+def forecast_post(body: ForecastRequest):
+    return forecast_get(horizon=body.horizon)
